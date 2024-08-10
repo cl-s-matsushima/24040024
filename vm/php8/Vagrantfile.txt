@@ -1,0 +1,68 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "centos/7"
+  
+  #IPアドレスは各自で変更お願いします。
+  config.vm.network "private_network", ip: "192.168.33.35"
+
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.memory = "1024"
+    vb.cpus = 2
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+    set -e
+
+    # 有効なbaseurlでCentOS-Base.repoを更新
+    sudo sed -i 's|^mirrorlist=|#mirrorlist=|g' /etc/yum.repos.d/CentOS-Base.repo
+    sudo sed -i 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-Base.repo
+
+    # 必要なリポジトリをインストール
+    sudo yum install epel-release -y || { echo 'epel-releaseのインストールに失敗しました'; exit 1; }
+
+    # remi-releaseリポジトリの追加
+    if ! sudo rpm -qa | grep -q remi-release; then
+      sudo yum install https://rpms.remirepo.net/enterprise/remi-release-7.rpm -y || { echo 'remi-releaseのインストールに失敗しました'; exit 1; }
+    fi
+    
+    # yum-utilsのインストールとPHP 8リポジトリの有効化
+    sudo yum install yum-utils -y || { echo 'yum-utilsのインストールに失敗しました'; exit 1; }
+    sudo yum-config-manager --enable remi-php80 || { echo 'remi-php80の有効化に失敗しました'; exit 1; }
+
+    # Apacheをインストール
+    sudo yum install httpd -y || { echo 'httpdのインストールに失敗しました'; exit 1; }
+    sudo systemctl start httpd || { echo 'httpdの起動に失敗しました'; exit 1; }
+    sudo systemctl enable httpd || { echo 'httpdの自動起動設定に失敗しました'; exit 1; }
+
+    # MariaDBをインストール
+    sudo yum install mariadb-server mariadb -y || { echo 'mariadbのインストールに失敗しました'; exit 1; }
+    sudo systemctl start mariadb || { echo 'mariadbの起動に失敗しました'; exit 1; }
+    sudo systemctl enable mariadb || { echo 'mariadbの自動起動設定に失敗しました'; exit 1; }
+
+    # MariaDBのセキュリティ設定
+    sudo mysql -e "UPDATE mysql.user SET Password = PASSWORD('password') WHERE User = 'root'" || { echo 'rootパスワードの更新に失敗しました'; exit 1; }
+    sudo mysql -e "DELETE FROM mysql.user WHERE User=''" || { echo '匿名ユーザーの削除に失敗しました'; exit 1; }
+    sudo mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')" || { echo 'リモートアクセスのrootユーザー削除に失敗しました'; exit 1; }
+    sudo mysql -e "DROP DATABASE IF EXISTS test" || { echo 'testデータベースの削除に失敗しました'; exit 1; }
+    sudo mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%'" || { echo 'testデータベースエントリの削除に失敗しました'; exit 1; }
+    sudo mysql -e "FLUSH PRIVILEGES" || { echo '権限のフラッシュに失敗しました'; exit 1; }
+
+    # PHP 8と必要なモジュールをインストール
+    sudo yum install php php-mysqlnd php-fpm php-json php-gd php-mbstring -y || { echo 'PHPのインストールに失敗しました'; exit 1; }
+
+    # 変更を適用するためApacheを再起動
+    sudo systemctl restart httpd || { echo 'httpdの再起動に失敗しました'; exit 1; }
+
+    # PHP検証用のinfo.phpを作成
+    echo "<?php phpinfo(); ?>" | sudo tee /var/www/html/info.php || { echo 'info.phpの作成に失敗しました'; exit 1; }
+
+    # firewalldをインストールして起動
+    sudo yum install firewalld -y || { echo 'firewalldのインストールに失敗しました'; exit 1; }
+    sudo systemctl start firewalld || { echo 'firewalldの起動に失敗しました'; exit 1; }
+    sudo systemctl enable firewalld || { echo 'firewalldの自動起動設定に失敗しました'; exit 1; }
+
+    # ファイアウォールを介してHTTPトラフィックを許可
+    sudo firewall-cmd --permanent --zone=public --add-service=http || { echo 'ファイアウォールルールの追加に失敗しました'; exit 1; }
+    sudo firewall-cmd --reload || { echo 'ファイアウォールのリロードに失敗しました'; exit 1; }
+  SHELL
+end
